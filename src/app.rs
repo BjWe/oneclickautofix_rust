@@ -4,7 +4,7 @@ use std::thread;
 use eframe::egui;
 
 use crate::command::parse_command;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, OnError};
 use crate::executor::execute;
 
 // ---------------------------------------------------------------------------
@@ -14,6 +14,7 @@ use crate::executor::execute;
 pub struct StepState {
     pub status:           StepStatus,
     pub logoff_countdown: Option<u64>,
+    pub warnings:         Vec<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -35,6 +36,7 @@ enum Ev {
     StepLogoff(usize, u64),
     StepDone(usize),
     StepFailed(usize, String),
+    StepWarning(usize, String),
     AllDone,
 }
 
@@ -51,7 +53,7 @@ pub struct OneClickApp {
 impl OneClickApp {
     pub fn new(config: AppConfig) -> Self {
         let step_states = config.steps.iter()
-            .map(|_| StepState { status: StepStatus::Waiting, logoff_countdown: None })
+            .map(|_| StepState { status: StepStatus::Waiting, logoff_countdown: None, warnings: Vec::new() })
             .collect();
         Self { config, step_states, phase: Phase::Welcome, rx: None }
     }
@@ -69,7 +71,10 @@ impl OneClickApp {
                 ctx.request_repaint();
 
                 let cmds: Result<Vec<_>, _> = step.run.iter()
-                    .map(|r| parse_command(r))
+                    .map(|entry| {
+                        parse_command(&entry.command_string())
+                            .map(|cmd| (cmd, entry.onerror()))
+                    })
                     .collect();
 
                 let cmds = match cmds {
@@ -81,36 +86,57 @@ impl OneClickApp {
                     }
                 };
 
-                let error: Option<String> = if step.parallel {
-                    thread::scope(|s| {
-                        cmds.iter()
-                            .map(|cmd| s.spawn(|| execute(cmd, None)))
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .find_map(|h| {
-                                h.join()
-                                    .unwrap_or_else(|_| Err("Thread-Fehler".to_string()))
-                                    .err()
-                            })
-                    })
+                let hard_error: Option<String> = if step.parallel {
+                    let results: Vec<(Result<(), String>, OnError)> = thread::scope(|s| {
+                        let handles: Vec<_> = cmds.iter()
+                            .map(|(cmd, _)| s.spawn(|| execute(cmd, None)))
+                            .collect();
+                        handles.into_iter()
+                            .zip(cmds.iter().map(|(_, oe)| oe.clone()))
+                            .map(|(h, oe)| (
+                                h.join().unwrap_or_else(|_| Err("Thread-Fehler".to_string())),
+                                oe,
+                            ))
+                            .collect()
+                    });
+                    let mut err = None;
+                    for (result, onerror) in results {
+                        match (result, onerror) {
+                            (Err(e), OnError::Stop) => { err = Some(e); }
+                            (Err(e), OnError::ContinueMessage) => {
+                                let _ = tx.send(Ev::StepWarning(i, e));
+                                ctx.request_repaint();
+                            }
+                            (Err(_), OnError::ContinueSilent) => {}
+                            (Ok(()), _) => {}
+                        }
+                    }
+                    err
                 } else {
                     let mut err = None;
-                    for cmd in &cmds {
+                    for (cmd, onerror) in &cmds {
                         let tx2  = tx.clone();
                         let ctx2 = ctx.clone();
                         let countdown = move |n: u64| {
                             let _ = tx2.send(Ev::StepLogoff(i, n));
                             ctx2.request_repaint();
                         };
-                        if let Err(e) = execute(cmd, Some(&countdown)) {
-                            err = Some(e);
-                            break;
+                        match execute(cmd, Some(&countdown)) {
+                            Ok(()) => {}
+                            Err(e) => match onerror {
+                                OnError::Stop => { err = Some(e); break; }
+                                OnError::ContinueMessage => {
+                                    let _ = tx.send(Ev::StepWarning(i, e));
+                                    ctx.request_repaint();
+                                }
+                                OnError::ContinueSilent => {}
+                            }
                         }
                     }
                     err
                 };
 
-                if let Some(e) = error {
+                if let Some(e) = hard_error {
                     let _ = tx.send(Ev::StepFailed(i, e));
                     ctx.request_repaint();
                     return;
@@ -143,6 +169,9 @@ impl OneClickApp {
                 Ev::StepFailed(i, msg) => {
                     self.step_states[i].status = StepStatus::Error(msg);
                     self.phase = Phase::Complete { aborted: true };
+                }
+                Ev::StepWarning(i, msg) => {
+                    self.step_states[i].warnings.push(msg);
                 }
                 Ev::AllDone => {
                     self.phase = Phase::Complete { aborted: false };
@@ -233,6 +262,9 @@ impl eframe::App for OneClickApp {
                             );
                             if let StepStatus::Error(msg) = &state.status {
                                 ui.label(egui::RichText::new(msg).small().color(egui::Color32::RED));
+                            }
+                            for warn in &state.warnings {
+                                ui.label(egui::RichText::new(warn).small().color(egui::Color32::from_rgb(220, 130, 0)));
                             }
                             if running {
                                 if let Some(n) = state.logoff_countdown {
