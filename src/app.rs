@@ -203,24 +203,30 @@ impl eframe::App for OneClickApp {
         let mut do_start = false;
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add_space(8.0);
+            ui.heading(egui::RichText::new(&self.config.title).size(18.0));
             ui.add_space(4.0);
-            ui.heading(&self.config.title);
             ui.separator();
+            ui.add_space(6.0);
 
             if is_welcome {
                 // Welcome card
-                ui.add_space(8.0);
                 egui::Frame::group(ui.style())
-                    .inner_margin(egui::Margin::same(14.0))
+                    .inner_margin(egui::Margin::same(20.0))
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.label(egui::RichText::new(&self.config.welcome.ask).size(13.0));
-                            ui.add_space(14.0);
+                            ui.add_space(16.0);
                             ui.horizontal(|ui| {
-                                if ui.button(egui::RichText::new("▶  Start").size(13.0)).clicked() {
+                                if ui.add_sized([96.0, 28.0], egui::Button::new(
+                                    egui::RichText::new("▶  Start").size(13.0)
+                                )).clicked() {
                                     do_start = true;
                                 }
-                                if ui.button("Abbrechen").clicked() {
+                                ui.add_space(6.0);
+                                if ui.add_sized([96.0, 28.0], egui::Button::new(
+                                    egui::RichText::new("Abbrechen").size(13.0)
+                                )).clicked() {
                                     std::process::exit(0);
                                 }
                             });
@@ -229,76 +235,109 @@ impl eframe::App for OneClickApp {
                 ui.add_space(14.0);
                 ui.separator();
             } else {
-                // Progress bar
-                ui.add(egui::ProgressBar::new(progress));
-                ui.add_space(4.0);
+                // Progress bar with embedded percentage
+                ui.add(
+                    egui::ProgressBar::new(progress)
+                        .text(format!("{} %", (progress * 100.0).round() as u32)),
+                );
+                ui.add_space(6.0);
             }
 
             // Step list
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for (step, state) in self.config.steps.iter().zip(self.step_states.iter()) {
                     let running = matches!(state.status, StepStatus::Running);
+                    let done    = matches!(state.status, StepStatus::Success);
 
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        // Status column
-                        ui.set_min_width(22.0);
+                        ui.set_min_height(30.0);
+
+                        // Status icon
+                        ui.add_space(2.0);
+                        ui.set_min_width(26.0);
                         match &state.status {
-                            StepStatus::Waiting    => { ui.label(egui::RichText::new("○").color(egui::Color32::DARK_GRAY)); }
-                            StepStatus::Running    => { ui.add(egui::Spinner::new().size(16.0)); }
-                            StepStatus::Success    => { ui.label(egui::RichText::new("✓").color(egui::Color32::GREEN)); }
-                            StepStatus::Error(_)   => { ui.label(egui::RichText::new("✗").color(egui::Color32::RED)); }
+                            StepStatus::Waiting  => { ui.label(egui::RichText::new("○").size(16.0).color(egui::Color32::from_gray(110))); }
+                            StepStatus::Running  => { ui.add(egui::Spinner::new().size(16.0)); }
+                            StepStatus::Success  => { ui.label(egui::RichText::new("✓").size(16.0).color(egui::Color32::from_rgb(80, 200, 100))); }
+                            StepStatus::Error(_) => { ui.label(egui::RichText::new("✗").size(16.0).color(egui::Color32::from_rgb(220, 70, 70))); }
                         }
+                        ui.add_space(4.0);
 
                         ui.vertical(|ui| {
-                            ui.label(if running {
-                                egui::RichText::new(&step.title).strong()
+                            let title_color = if done {
+                                egui::Color32::from_gray(140)
                             } else {
-                                egui::RichText::new(&step.title)
-                            });
+                                ui.visuals().text_color()
+                            };
+                            let desc_gray = if done { 100u8 } else { 150u8 };
+
+                            let title_text = egui::RichText::new(&step.title)
+                                .size(13.5)
+                                .color(title_color);
+                            ui.label(if running { title_text.strong() } else { title_text });
                             ui.label(
                                 egui::RichText::new(&step.description)
-                                    .small()
-                                    .color(egui::Color32::GRAY),
+                                    .size(11.5)
+                                    .color(egui::Color32::from_gray(desc_gray)),
                             );
                             if let StepStatus::Error(msg) = &state.status {
-                                ui.label(egui::RichText::new(msg).small().color(egui::Color32::RED));
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(msg)
+                                        .size(11.5)
+                                        .color(egui::Color32::from_rgb(220, 70, 70)),
+                                );
                             }
                             for warn in &state.warnings {
-                                ui.label(egui::RichText::new(warn).small().color(egui::Color32::from_rgb(220, 130, 0)));
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(warn)
+                                        .size(11.5)
+                                        .color(egui::Color32::from_rgb(220, 150, 0)),
+                                );
                             }
                             if running {
                                 if let Some(n) = state.logoff_countdown {
+                                    ui.add_space(2.0);
                                     ui.label(
                                         egui::RichText::new(format!("Abmeldung in {n} s …"))
-                                            .small()
-                                            .color(egui::Color32::from_rgb(220, 130, 0)),
+                                            .size(11.5)
+                                            .color(egui::Color32::from_rgb(220, 150, 0)),
                                     );
                                 }
                             }
                         });
                     });
-                    ui.add_space(2.0);
+                    ui.add_space(4.0);
                     ui.separator();
                 }
 
-                // Completion notice
+                // Completion banner
                 if let Some(aborted) = completion {
-                    ui.add_space(10.0);
-                    if aborted {
-                        ui.colored_label(egui::Color32::RED,   "✗  Abgebrochen – ein Schritt ist fehlgeschlagen.");
+                    ui.add_space(12.0);
+                    let (fg, bg, text) = if aborted {
+                        (
+                            egui::Color32::from_rgb(220, 70, 70),
+                            egui::Color32::from_rgba_unmultiplied(220, 70, 70, 18),
+                            "✗  Abgebrochen – ein Schritt ist fehlgeschlagen.",
+                        )
                     } else {
-                        ui.colored_label(egui::Color32::GREEN, "✓  Alle Schritte erfolgreich abgeschlossen.");
-                    }
+                        (
+                            egui::Color32::from_rgb(80, 200, 100),
+                            egui::Color32::from_rgba_unmultiplied(80, 200, 100, 18),
+                            "✓  Alle Schritte erfolgreich abgeschlossen.",
+                        )
+                    };
+                    egui::Frame::none()
+                        .fill(bg)
+                        .inner_margin(egui::Margin::same(10.0))
+                        .rounding(egui::Rounding::same(4.0))
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(text).size(13.0).color(fg).strong());
+                        });
                 }
             });
-
-            // Footer: percentage
-            if !is_welcome {
-                ui.separator();
-                ui.vertical_centered(|ui| {
-                    ui.label(format!("Fortschritt: {} %", (progress * 100.0).round() as u32));
-                });
-            }
         });
 
         if do_start {

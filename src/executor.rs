@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command as Proc;
+use std::os::windows::process::CommandExt;
 
 use crate::command::{Command, RegOp};
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub fn execute(cmd: &Command, on_countdown: Option<&dyn Fn(u64)>) -> Result<(), String> {
     match cmd {
@@ -22,6 +25,7 @@ pub fn execute(cmd: &Command, on_countdown: Option<&dyn Fn(u64)>) -> Result<(), 
 fn run_ps(script: &str) -> Result<(), String> {
     let out = Proc::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("PowerShell konnte nicht gestartet werden: {e}"))?;
     if out.status.success() {
@@ -38,6 +42,7 @@ fn run_ps(script: &str) -> Result<(), String> {
 fn run_cmd(exe: &str, args: &[&str]) -> Result<(), String> {
     let out = Proc::new(exe)
         .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("{exe} konnte nicht gestartet werden: {e}"))?;
     if out.status.success() {
@@ -83,21 +88,20 @@ fn taskkill(my_only: bool, pattern: &str) -> Result<(), String> {
 }
 
 fn remove(force: bool, path: &str) -> Result<(), String> {
+    if force {
+        // PowerShell handles wildcards, missing paths, and locked files better than Rust fs
+        return run_ps(&format!(
+            "Remove-Item -Path {} -Recurse -Force -ErrorAction SilentlyContinue",
+            psq(path)
+        ));
+    }
     let p = Path::new(path);
-    let result = if p.is_dir() {
+    if p.is_dir() {
         fs::remove_dir_all(p).map_err(|e| e.to_string())
     } else if p.exists() {
         fs::remove_file(p).map_err(|e| e.to_string())
     } else {
-        return Ok(()); // already gone
-    };
-    if result.is_err() && force {
-        run_ps(&format!(
-            "Remove-Item -Path {} -Recurse -Force -ErrorAction SilentlyContinue",
-            psq(path)
-        ))
-    } else {
-        result
+        Ok(()) // already gone
     }
 }
 
